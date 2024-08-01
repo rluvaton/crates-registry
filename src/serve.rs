@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Context as _;
+use anyhow::{anyhow, Context as _};
 use anyhow::Error;
 use anyhow::Result;
 
@@ -12,13 +12,15 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tracing::info;
-
+use tracing_subscriber::fmt::format::FmtSpan;
 use warp::http::StatusCode;
 use warp::http::Uri;
 use warp::reject::Reject;
-use warp::Filter;
+use warp::{Filter, Reply, reply, trace};
+use warp::fs::File;
 use warp::Rejection;
-
+use warp::reply::Response;
+use warp::trace::Info;
 use crate::index::handle_git;
 use crate::index::Index;
 use crate::publish::crate_file_name;
@@ -142,11 +144,17 @@ pub async fn serve(root: &Path, binding: impl Into<ServerBinding>, server_addr: 
                             body,
                             query,
                         )
-                        .await,
+                            .await,
                     )
                 }
             },
         );
+
+
+    // Custom rejection handler that maps rejections into responses.
+    async fn reply_on_not_found(err: Rejection) -> Result<impl warp::Reply, warp::Rejection> {}
+
+
     // Handle sparse index requests at /index/
     // let sparse_index = warp::path("index").and(warp::fs::dir(index_folder.clone()));
 
@@ -154,15 +162,32 @@ pub async fn serve(root: &Path, binding: impl Into<ServerBinding>, server_addr: 
     // downloading the .crate files, to which we redirect from the
     // download handler below.
     let crates = warp::path("crates")
-        .and(warp::fs::dir(crates_folder.to_path_buf()))
+        .and(warp::fs::dir(crates_folder.to_path_buf())
+            // warp::fs::dir uses `and_then` so if file is missing it will try to find another route that match
+            // until returning Method not allowed...
+            // so we fix that by returning not found explicitly
+            .recover(
+                |err: Rejection| async {
+                    if err.is_not_found() {
+                        return Ok(reply::with_status(reply::json(&RegistryError {
+                            detail: "Not found".to_string(),
+                        }), StatusCode::NOT_FOUND));
+                    }
+
+                    return Err(err);
+                })
+        )
+
         .with(warp::trace::request());
-    let download = warp::get()
-        .and(warp::path("api"))
+    let download = warp::path("api")
         .and(warp::path("v1"))
         .and(warp::path("crates"))
         .and(warp::path::param())
         .and(warp::path::param())
         .and(warp::path("download"))
+        .and(
+            warp::get().or(warp::head()).unify()
+        )
         .map(move |name: String, version: String| {
             let crate_path = crate_path(&name).join(crate_file_name(&name, &version));
             let path = format!(
@@ -180,11 +205,11 @@ pub async fn serve(root: &Path, binding: impl Into<ServerBinding>, server_addr: 
             path.parse::<Uri>().map(warp::redirect).unwrap()
         })
         .with(warp::trace::request());
-    let publish = warp::put()
-        .and(warp::path("api"))
+    let publish = warp::path("api")
         .and(warp::path("v1"))
         .and(warp::path("crates"))
         .and(warp::path("new"))
+        .and(warp::put())
         .and(warp::path::end())
         .and(warp::body::bytes())
         // We cap total body size to 20 MiB to have some upper bound. At the
