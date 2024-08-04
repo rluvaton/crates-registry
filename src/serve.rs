@@ -149,12 +149,6 @@ pub async fn serve(root: &Path, binding: impl Into<ServerBinding>, server_addr: 
                 }
             },
         );
-
-
-    // Custom rejection handler that maps rejections into responses.
-    async fn reply_on_not_found(err: Rejection) -> Result<impl warp::Reply, warp::Rejection> {}
-
-
     // Handle sparse index requests at /index/
     // let sparse_index = warp::path("index").and(warp::fs::dir(index_folder.clone()));
 
@@ -185,9 +179,7 @@ pub async fn serve(root: &Path, binding: impl Into<ServerBinding>, server_addr: 
         .and(warp::path::param())
         .and(warp::path::param())
         .and(warp::path("download"))
-        .and(
-            warp::get().or(warp::head()).unify()
-        )
+        .and(warp::get())
         .map(move |name: String, version: String| {
             let crate_path = crate_path(&name).join(crate_file_name(&name, &version));
             let path = format!(
