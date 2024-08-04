@@ -173,13 +173,15 @@ pub async fn serve(root: &Path, binding: impl Into<ServerBinding>, server_addr: 
         )
 
         .with(warp::trace::request());
-    let download = warp::get()
-        .and(warp::path("api"))
+    let download = warp::path("api")
         .and(warp::path("v1"))
         .and(warp::path("crates"))
         .and(warp::path::param())
         .and(warp::path::param())
         .and(warp::path("download"))
+        .and(
+            warp::get().or(warp::head()).unify()
+        )
         .map(move |name: String, version: String| {
             let crate_path = crate_path(&name).join(crate_file_name(&name, &version));
             let path = format!(
