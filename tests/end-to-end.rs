@@ -10,10 +10,9 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
 use anyhow::Result;
-
-use reqwest::Url;
+use reqwest::{Method, StatusCode, Url};
+use reqwest::header::USER_AGENT;
 use tempfile::tempdir;
-
 use tokio::net::TcpListener;
 use tokio::spawn;
 use tokio::task::JoinHandle;
@@ -38,6 +37,20 @@ async fn get_listener_in_available_port() -> TcpListener {
         }
     }
     panic!("No port available");
+}
+
+async fn send_download_request(addr: SocketAddr, method: Method, pkg_name: &str, ver: &str)-> StatusCode  {
+    let client = reqwest::Client::new();
+
+    let base_url = format!("http://{}/api/v1/crates", addr);
+
+    client
+        .request(method, format!("{}/{}/{}/download", base_url, pkg_name, ver))
+        .header(USER_AGENT, "cargo-upload")
+        .send()
+        .await
+        .expect("Failed to send request")
+        .status()
 }
 
 /// Append data to a file.
@@ -181,8 +194,42 @@ async fn publish() {
             my_lib.join("Cargo.toml").to_str().unwrap(),
         ],
     )
-    .await
-    .unwrap();
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn publish_and_consume_download_endpoint() {
+    let (_handle, _reg_root, addr) = serve_registry().await;
+
+    let src_root = tempdir().unwrap();
+    let src_root = src_root.path();
+    let home = setup_cargo_home(src_root, Locator::Socket(addr)).unwrap();
+
+    let my_lib = src_root.join("my-lib");
+    cargo_init(&home, ["--lib", my_lib.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    cargo_publish(
+        &home,
+        [
+            "--manifest-path",
+            my_lib.join("Cargo.toml").to_str().unwrap(),
+        ],
+    )
+        .await
+        .unwrap();
+
+    // "/crates/my/-l/my-lib-0.1.0.crate"
+    let existing_crate_and_version_status = send_download_request(addr, Method::GET, "my-lib", "0.1.0").await;
+    assert_eq!(existing_crate_and_version_status, 200);
+
+    let existing_crate_and_missing_version_status = send_download_request(addr, Method::GET, "my-lib", "99.99.99").await;
+    assert_eq!(existing_crate_and_missing_version_status, 404);
+
+    let missing_crate_and_status = send_download_request(addr, Method::GET, "ba93ba78-f47a-4a37-b25b-1c713e5d11f8", "99.99.99").await;
+    assert_eq!(missing_crate_and_status, 404);
 }
 
 async fn test_publish_and_consume(registry_locator: Locator) {

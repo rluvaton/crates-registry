@@ -16,9 +16,11 @@ use tracing::info;
 use warp::http::StatusCode;
 use warp::http::Uri;
 use warp::reject::Reject;
-use warp::Filter;
+use warp::{Filter, Reply, reply, trace};
+use warp::fs::File;
 use warp::Rejection;
-
+use warp::reply::Response;
+use warp::trace::Info;
 use crate::index::handle_git;
 use crate::index::Index;
 use crate::publish::crate_file_name;
@@ -142,7 +144,7 @@ pub async fn serve(root: &Path, binding: impl Into<ServerBinding>, server_addr: 
                             body,
                             query,
                         )
-                        .await,
+                            .await,
                     )
                 }
             },
@@ -154,7 +156,22 @@ pub async fn serve(root: &Path, binding: impl Into<ServerBinding>, server_addr: 
     // downloading the .crate files, to which we redirect from the
     // download handler below.
     let crates = warp::path("crates")
-        .and(warp::fs::dir(crates_folder.to_path_buf()))
+        .and(warp::fs::dir(crates_folder.to_path_buf())
+            // warp::fs::dir uses `and_then` so if file is missing it will try to find another route that match
+            // until returning Method not allowed...
+            // so we fix that by returning not found explicitly
+            .recover(
+                |err: Rejection| async {
+                    if err.is_not_found() {
+                        return Ok(reply::with_status(reply::json(&RegistryError {
+                            detail: "Not found".to_string(),
+                        }), StatusCode::NOT_FOUND));
+                    }
+
+                    return Err(err);
+                })
+        )
+
         .with(warp::trace::request());
     let download = warp::path("api")
         .and(warp::path("v1"))
